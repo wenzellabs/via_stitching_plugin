@@ -179,6 +179,19 @@ class ViaStitchingDialog(wx.Dialog):
                     for trace in longest_track:
                         trace.SetSelected()
                     pcbnew.Refresh()
+                
+                # Place stitching vias along tracks
+                total_vias_placed = 0
+                for layer_name in layer_order:
+                    if layer_name in tracks_per_layer:
+                        layer_id = self.get_layer_id(board, layer_name)
+                        vias_placed = self.stitch_tracks(board, tracks_per_layer[layer_name], 
+                                                         layer_id, stitch_distance, 
+                                                         via_drill, via_diameter)
+                        total_vias_placed += vias_placed
+                
+                if total_vias_placed > 0:
+                    messages.append("\n%d stitching vias placed" % total_vias_placed)
             
             if messages:
                 msg = "\n".join(messages) + "\n\nOperation completed successfully."
@@ -406,6 +419,209 @@ class ViaStitchingDialog(wx.Dialog):
             tracks.append(current_track)
         
         return tracks
+    
+    def get_layer_id(self, board, layer_name):
+        """Get layer ID from layer name."""
+        if pcbnew is None:
+            return 0
+        for layer_id in range(pcbnew.PCB_LAYER_ID_COUNT):
+            if board.GetLayerName(layer_id) == layer_name:
+                return layer_id
+        return 0
+    
+    def stitch_tracks(self, board, tracks, layer_id, stitch_distance_mm, via_drill_mm, via_diameter_mm):
+        """Place stitching vias along tracks.
+        
+        Args:
+            board: pcbnew board object
+            tracks: list of tracks (each track is a list of trace segments)
+            layer_id: layer ID for the traces
+            stitch_distance_mm: distance between via placements in mm
+            via_drill_mm: via drill diameter in mm
+            via_diameter_mm: via diameter in mm
+            
+        Returns:
+            number of vias placed
+        """
+        if pcbnew is None:
+            return 0
+        
+        import math
+        
+        # Convert mm to internal units (nanometers)
+        stitch_distance = int(stitch_distance_mm * 1e6)
+        via_drill = int(via_drill_mm * 1e6)
+        via_diameter = int(via_diameter_mm * 1e6)
+        
+        # Find GND net
+        gnd_net = None
+        netinfo = board.GetNetInfo()
+        for net_code in range(netinfo.GetNetCount()):
+            net = netinfo.GetNetItem(net_code)
+            if net is not None:
+                net_name = net.GetNetname().upper()
+                if net_name in ['GND', 'GROUND', 'VSS']:
+                    gnd_net = net
+                    break
+        
+        if gnd_net is None:
+            return 0
+        
+        vias_placed = 0
+        
+        for track in tracks:
+            if not track:
+                continue
+            
+            # Get the first trace to determine net class clearance and trace width
+            first_trace = track[0]
+            trace_width = first_trace.GetWidth()
+            
+            # Get clearance - use the board's design rules
+            # GetClearance() method on tracks returns the actual clearance for that object
+            try:
+                clearance = first_trace.GetOwnClearance(layer_id)
+            except:
+                # Fallback: try different methods or use default
+                try:
+                    clearance = board.GetDesignSettings().GetDefault().GetClearance()
+                except:
+                    clearance = 200000  # default 0.2mm in nanometers
+            
+            # Calculate offset from track center to via center
+            # offset = trace_width/2 + clearance + via_diameter/2
+            offset = trace_width // 2 + clearance + via_diameter // 2
+            
+            # First, sort traces in the track to ensure they're in sequence
+            # (assuming they should connect end-to-start)
+            sorted_track = self.sort_track_traces(track)
+            
+            # Walk along the entire track, accumulating distance
+            total_distance = 0
+            next_via_distance = 0  # Place first vias at the start
+            
+            for trace in sorted_track:
+                start = trace.GetStart()
+                end = trace.GetEnd()
+                
+                # Calculate trace length and direction
+                dx = end.x - start.x
+                dy = end.y - start.y
+                length = math.sqrt(dx*dx + dy*dy)
+                
+                if length < 1:
+                    continue
+                
+                # Unit direction vector
+                dir_x = dx / length
+                dir_y = dy / length
+                
+                # Perpendicular vector (rotated 90° counterclockwise)
+                perp_x = -dir_y
+                perp_y = dir_x
+                
+                # Check if we need to place vias along this trace segment
+                segment_start_distance = total_distance
+                segment_end_distance = total_distance + length
+                
+                while next_via_distance < segment_end_distance:
+                    # Calculate position along this specific trace segment
+                    dist_along_segment = next_via_distance - segment_start_distance
+                    
+                    if dist_along_segment >= 0:  # Via position is within this segment
+                        pos_x = int(start.x + dir_x * dist_along_segment)
+                        pos_y = int(start.y + dir_y * dist_along_segment)
+                        
+                        # Place two vias: one on each side
+                        for side in [-1, 1]:
+                            via_x = int(pos_x + perp_x * offset * side)
+                            via_y = int(pos_y + perp_y * offset * side)
+                            
+                            # Create via
+                            via = pcbnew.PCB_VIA(board)
+                            via.SetPosition(pcbnew.VECTOR2I(via_x, via_y))
+                            via.SetDrill(via_drill)
+                            via.SetWidth(via_diameter)
+                            via.SetNet(gnd_net)
+                            
+                            # Set via to span all layers (through via)
+                            via.SetLayerPair(pcbnew.F_Cu, pcbnew.B_Cu)
+                            
+                            board.Add(via)
+                            vias_placed += 1
+                    
+                    # Move to next stitch position
+                    next_via_distance += stitch_distance
+                
+                # Update total distance for next trace
+                total_distance = segment_end_distance
+        
+        # Refresh board
+        pcbnew.Refresh()
+        
+        return vias_placed
+    
+    def sort_track_traces(self, track):
+        """Sort traces in a track so they form a continuous path.
+        
+        Args:
+            track: list of trace objects that should connect end-to-end
+            
+        Returns:
+            sorted list of traces forming a continuous path
+        """
+        if not track or len(track) <= 1:
+            return track
+        
+        COORD_TOLERANCE = 1000  # nanometers
+        
+        def coords_match(pos1, pos2):
+            return (abs(pos1.x - pos2.x) <= COORD_TOLERANCE and 
+                    abs(pos1.y - pos2.y) <= COORD_TOLERANCE)
+        
+        sorted_traces = [track[0]]
+        remaining = list(track[1:])
+        
+        # Build chain by finding traces that connect to current endpoint
+        while remaining:
+            current_end = sorted_traces[-1].GetEnd()
+            found = False
+            
+            for i, trace in enumerate(remaining):
+                if coords_match(current_end, trace.GetStart()):
+                    sorted_traces.append(trace)
+                    remaining.pop(i)
+                    found = True
+                    break
+                elif coords_match(current_end, trace.GetEnd()):
+                    # Trace is backwards - we'll handle this by just using it as-is
+                    # The via placement will still work
+                    sorted_traces.append(trace)
+                    remaining.pop(i)
+                    found = True
+                    break
+            
+            if not found:
+                # Try connecting to the start of the chain instead
+                current_start = sorted_traces[0].GetStart()
+                for i, trace in enumerate(remaining):
+                    if coords_match(current_start, trace.GetEnd()):
+                        sorted_traces.insert(0, trace)
+                        remaining.pop(i)
+                        found = True
+                        break
+                    elif coords_match(current_start, trace.GetStart()):
+                        sorted_traces.insert(0, trace)
+                        remaining.pop(i)
+                        found = True
+                        break
+            
+            if not found:
+                # Disconnected trace - just append remaining
+                sorted_traces.extend(remaining)
+                break
+        
+        return sorted_traces
 
 
 class ViaStitchingPlugin(pcbnew.ActionPlugin if pcbnew is not None else object):

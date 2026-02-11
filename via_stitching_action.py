@@ -163,18 +163,32 @@ class ViaStitchingDialog(wx.Dialog):
                         tracks_per_layer[layer_name] = tracks
                         messages.append("  Layer %s: %d tracks reconstructed" % (layer_name, len(tracks)))
                 
+                # Collect all copper obstacles once for all layers
+                copper_obstacles = self.get_copper_obstacles(board)
+                
                 # Place stitching vias along tracks
                 total_vias_placed = 0
+                total_vias_skipped = 0
                 for layer_name in layer_order:
                     if layer_name in tracks_per_layer:
                         layer_id = self.get_layer_id(board, layer_name)
-                        vias_placed = self.stitch_tracks(board, tracks_per_layer[layer_name], 
+                        vias_placed, vias_skipped = self.stitch_tracks(board, tracks_per_layer[layer_name], 
                                                          layer_id, stitch_distance, 
-                                                         via_drill, via_diameter)
+                                                         via_drill, via_diameter, copper_obstacles)
                         total_vias_placed += vias_placed
+                        total_vias_skipped += vias_skipped
                 
                 if total_vias_placed > 0:
-                    messages.append("\n%d stitching vias placed" % total_vias_placed)
+                    total_attempted = total_vias_placed + total_vias_skipped
+                    success_rate = (total_vias_placed * 100.0) / total_attempted if total_attempted > 0 else 0
+                    messages.append(f"\n{total_vias_placed} stitching vias placed")
+                    messages.append(f"{total_vias_skipped} vias skipped (clearance issues)")
+                    messages.append(f"Success rate: {success_rate:.1f}%")
+                    
+                    if total_vias_skipped > total_vias_placed:
+                        messages.append("\nNote: Many vias were skipped due to insufficient clearance.")
+                        messages.append("This usually means the PCB is very dense in those areas.")
+                        messages.append("Consider using smaller vias or increasing trace spacing.")
             
             if messages:
                 msg = "\n".join(messages) + "\n\nOperation completed successfully."
@@ -412,7 +426,7 @@ class ViaStitchingDialog(wx.Dialog):
                 return layer_id
         return 0
     
-    def stitch_tracks(self, board, tracks, layer_id, stitch_distance_mm, via_drill_mm, via_diameter_mm):
+    def stitch_tracks(self, board, tracks, layer_id, stitch_distance_mm, via_drill_mm, via_diameter_mm, copper_obstacles):
         """Place stitching vias along tracks.
         
         Args:
@@ -422,9 +436,10 @@ class ViaStitchingDialog(wx.Dialog):
             stitch_distance_mm: distance between via placements in mm
             via_drill_mm: via drill diameter in mm
             via_diameter_mm: via diameter in mm
+            copper_obstacles: precomputed copper obstacles dict
             
         Returns:
-            number of vias placed
+            tuple: (number of vias placed, number of vias skipped)
         """
         if pcbnew is None:
             return 0
@@ -463,6 +478,7 @@ class ViaStitchingDialog(wx.Dialog):
             # Get the first trace to determine net class clearance and trace width
             first_trace = track[0]
             trace_width = first_trace.GetWidth()
+            track_net = first_trace.GetNet()
             
             # Get clearance - use the board's design rules
             # GetClearance() method on tracks returns the actual clearance for that object
@@ -519,7 +535,7 @@ class ViaStitchingDialog(wx.Dialog):
                         pos_x = int(start.x + dir_x * dist_along_segment)
                         pos_y = int(start.y + dir_y * dist_along_segment)
                         
-                        # Place two vias: one on each side
+                        # Place two vias: one on each side (independently)
                         for side in [-1, 1]:
                             via_x = int(pos_x + perp_x * offset * side)
                             via_y = int(pos_y + perp_y * offset * side)
@@ -527,6 +543,12 @@ class ViaStitchingDialog(wx.Dialog):
                             # Check if via would collide with any courtyard
                             # Since vias are through-holes, they must avoid ALL courtyards (F and B)
                             if self.via_collides_with_courtyards(via_x, via_y, via_diameter, courtyards):
+                                vias_skipped += 1
+                                continue  # Skip this via
+                            
+                            # Check if via would collide with any copper on any layer
+                            # Exclude all copper on the same net (vias connect to their own net)
+                            if self.via_collides_with_copper(via_x, via_y, via_diameter, copper_obstacles, clearance, track_net):
                                 vias_skipped += 1
                                 continue  # Skip this via
                             
@@ -552,7 +574,7 @@ class ViaStitchingDialog(wx.Dialog):
         # Refresh board
         pcbnew.Refresh()
         
-        return vias_placed
+        return vias_placed, vias_skipped
     
     def sort_track_traces(self, track):
         """Sort traces in a track so they form a continuous path.
@@ -761,6 +783,183 @@ class ViaStitchingDialog(wx.Dialog):
                 pass
         
         return False
+    
+    def get_copper_obstacles(self, board):
+        """Collect all copper objects on all copper layers that could block via placement.
+        
+        This includes: tracks, pads, existing vias, filled zones.
+        Does NOT include: silkscreen, non-copper layers.
+        
+        Args:
+            board: pcbnew board object
+            
+        Returns:
+            dict mapping layer_id to list of obstacle objects
+        """
+        if pcbnew is None:
+            return {}
+        
+        obstacles = {}
+        
+        # Get all copper layer IDs
+        copper_layers = []
+        layer_count = board.GetCopperLayerCount()
+        for i in range(layer_count):
+            if i == 0:
+                copper_layers.append(pcbnew.F_Cu)
+            elif i == layer_count - 1:
+                copper_layers.append(pcbnew.B_Cu)
+            else:
+                # Inner layers
+                copper_layers.append(pcbnew.In1_Cu + (i - 1) * 2)
+        
+        # Initialize obstacle lists for each layer
+        for layer in copper_layers:
+            obstacles[layer] = []
+        
+        # Collect tracks and vias
+        for track in board.GetTracks():
+            if hasattr(track, 'GetViaType') or track.Type() == pcbnew.PCB_VIA_T:
+                # Via - affects all layers it spans
+                layer_top, layer_bottom = track.GetLayerSet().Seq()[0], track.GetLayerSet().Seq()[-1]
+                for layer in copper_layers:
+                    obstacles[layer].append(track)
+            else:
+                # Regular track - only affects its own layer
+                track_layer = track.GetLayer()
+                if track_layer in obstacles:
+                    obstacles[track_layer].append(track)
+        
+        # Collect pads from all footprints
+        for footprint in board.GetFootprints():
+            for pad in footprint.Pads():
+                # Pads can span multiple layers
+                pad_layers = pad.GetLayerSet()
+                for layer in copper_layers:
+                    if pad_layers.Contains(layer):
+                        obstacles[layer].append(pad)
+        
+        # Zones are NOT added to obstacles - vias can be placed in zones
+        # The zone will automatically pour around vias with proper clearance
+        
+        return obstacles
+    
+    def via_collides_with_copper(self, via_x, via_y, via_diameter, copper_obstacles, min_clearance, exclude_net):
+        """Check if a via would collide with any copper on any layer.
+        
+        Args:
+            via_x, via_y: via center in internal units
+            via_diameter: via diameter in internal units
+            copper_obstacles: dict mapping layer_id to list of copper objects
+            min_clearance: minimum clearance required in internal units
+            exclude_net: pcbnew net object to exclude from collision check (vias connect to their own net)
+            
+        Returns:
+            True if collision detected on ANY layer
+        """
+        if pcbnew is None or not copper_obstacles:
+            return False
+        
+        import math
+        
+        # Via footprint = via radius + clearance
+        via_radius = via_diameter // 2
+        check_radius = via_radius + min_clearance
+        
+        via_pos = pcbnew.VECTOR2I(via_x, via_y)
+        
+        # Check all copper layers
+        for layer_id, obstacles in copper_obstacles.items():
+            for obstacle in obstacles:
+                # Skip if this obstacle is on the same net (vias connect to their own net)
+                obstacle_net = obstacle.GetNet() if hasattr(obstacle, 'GetNet') else None
+                if obstacle_net and exclude_net and obstacle_net.GetNetCode() == exclude_net.GetNetCode():
+                    continue
+                
+                # Determine obstacle type and check collision
+                obstacle_type = obstacle.Type()
+                
+                # For tracks (including the track we're stitching along - we'll keep clearance)
+                if obstacle_type == pcbnew.PCB_TRACE_T:
+                    start = obstacle.GetStart()
+                    end = obstacle.GetEnd()
+                    width = obstacle.GetWidth()
+                    
+                    # Calculate distance from via center to track segment
+                    dist = self.point_to_segment_distance(via_x, via_y, start.x, start.y, end.x, end.y)
+                    
+                    # Check if too close (via footprint + track half-width)
+                    if dist < check_radius + width // 2:
+                        return True
+                
+                # For vias
+                elif hasattr(obstacle, 'GetViaType') or obstacle_type == pcbnew.PCB_VIA_T:
+                    via_pos_other = obstacle.GetPosition()
+                    via_diameter_other = obstacle.GetWidth()
+                    
+                    dx = via_x - via_pos_other.x
+                    dy = via_y - via_pos_other.y
+                    dist = math.sqrt(dx*dx + dy*dy)
+                    
+                    # Check if vias would overlap (both radii + clearance)
+                    if dist < check_radius + via_diameter_other // 2 + min_clearance:
+                        return True
+                
+                # For pads
+                elif obstacle_type == pcbnew.PCB_PAD_T:
+                    pad_pos = obstacle.GetPosition()
+                    
+                    # Simple bounding box check + distance
+                    dx = via_x - pad_pos.x
+                    dy = via_y - pad_pos.y
+                    dist = math.sqrt(dx*dx + dy*dy)
+                    
+                    # Get pad size (approximation)
+                    pad_size = obstacle.GetSize()
+                    pad_radius = max(pad_size.x, pad_size.y) // 2
+                    
+                    if dist < check_radius + pad_radius:
+                        return True
+                
+                # Zones are NOT checked - vias can be placed in zones
+                # The zone will automatically maintain clearance around the via
+        
+        return False
+    
+    def point_to_segment_distance(self, px, py, x1, y1, x2, y2):
+        """Calculate minimum distance from point (px, py) to line segment (x1,y1)-(x2,y2).
+        
+        Returns distance in same units as input coordinates.
+        """
+        import math
+        
+        # Vector from segment start to point
+        dx = px - x1
+        dy = py - y1
+        
+        # Vector of segment
+        sx = x2 - x1
+        sy = y2 - y1
+        
+        # Segment length squared
+        seg_len_sq = sx*sx + sy*sy
+        
+        if seg_len_sq == 0:
+            # Degenerate segment (point)
+            return math.sqrt(dx*dx + dy*dy)
+        
+        # Project point onto segment (clamped to [0, 1])
+        t = max(0, min(1, (dx*sx + dy*sy) / seg_len_sq))
+        
+        # Closest point on segment
+        closest_x = x1 + t * sx
+        closest_y = y1 + t * sy
+        
+        # Distance from point to closest point
+        dist_x = px - closest_x
+        dist_y = py - closest_y
+        
+        return math.sqrt(dist_x*dist_x + dist_y*dist_y)
 
 
 class ViaStitchingPlugin(pcbnew.ActionPlugin if pcbnew is not None else object):

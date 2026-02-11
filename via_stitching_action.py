@@ -564,6 +564,11 @@ class ViaStitchingDialog(wx.Dialog):
                             
                             board.Add(via)
                             vias_placed += 1
+                            
+                            # Add this via to copper_obstacles so future vias avoid it
+                            # Add to all copper layers since it's a through via
+                            for layer in copper_obstacles.keys():
+                                copper_obstacles[layer].append(via)
                     
                     # Move to next stitch position
                     next_via_distance += stitch_distance

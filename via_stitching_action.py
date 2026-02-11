@@ -155,9 +155,6 @@ class ViaStitchingDialog(wx.Dialog):
                 
                 # Reconstruct tracks from trace segments
                 tracks_per_layer = {}
-                longest_track = None
-                longest_track_layer = None
-                max_trace_count = 0
                 
                 messages.append("\nTracks:")
                 for layer_name in layer_order:
@@ -165,20 +162,6 @@ class ViaStitchingDialog(wx.Dialog):
                         tracks = self.reconstruct_tracks(traces_per_layer[layer_name])
                         tracks_per_layer[layer_name] = tracks
                         messages.append("  Layer %s: %d tracks reconstructed" % (layer_name, len(tracks)))
-                        
-                        # Find longest track
-                        for track in tracks:
-                            if len(track) > max_trace_count:
-                                max_trace_count = len(track)
-                                longest_track = track
-                                longest_track_layer = layer_name
-                
-                if longest_track:
-                    messages.append("\nLongest track: %d traces on layer %s (selected)" % (max_trace_count, longest_track_layer))
-                    # Select all traces in the longest track
-                    for trace in longest_track:
-                        trace.SetSelected()
-                    pcbnew.Refresh()
                 
                 # Place stitching vias along tracks
                 total_vias_placed = 0
@@ -468,6 +451,10 @@ class ViaStitchingDialog(wx.Dialog):
             return 0
         
         vias_placed = 0
+        vias_skipped = 0
+        
+        # Collect all courtyards (front and back) for collision detection
+        courtyards = self.get_all_courtyards(board)
         
         for track in tracks:
             if not track:
@@ -536,6 +523,12 @@ class ViaStitchingDialog(wx.Dialog):
                         for side in [-1, 1]:
                             via_x = int(pos_x + perp_x * offset * side)
                             via_y = int(pos_y + perp_y * offset * side)
+                            
+                            # Check if via would collide with any courtyard
+                            # Since vias are through-holes, they must avoid ALL courtyards (F and B)
+                            if self.via_collides_with_courtyards(via_x, via_y, via_diameter, courtyards):
+                                vias_skipped += 1
+                                continue  # Skip this via
                             
                             # Create via
                             via = pcbnew.PCB_VIA(board)
@@ -622,6 +615,152 @@ class ViaStitchingDialog(wx.Dialog):
                 break
         
         return sorted_traces
+    
+    def get_all_courtyards(self, board):
+        """Collect all courtyard polygons from footprints (front and back).
+        
+        Args:
+            board: pcbnew board object
+            
+        Returns:
+            list of courtyard shape objects
+        """
+        if pcbnew is None:
+            return []
+        
+        courtyards = []
+        
+        for footprint in board.GetFootprints():
+            # Get both front and back courtyards - vias must avoid both!
+            for layer in [pcbnew.F_CrtYd, pcbnew.B_CrtYd]:
+                # Get courtyard outlines for this layer
+                try:
+                    # Try getting the courtyard polygon directly
+                    courtyard_poly = footprint.GetCourtyard(layer)
+                    if courtyard_poly and courtyard_poly.OutlineCount() > 0:
+                        courtyards.append((layer, courtyard_poly))
+                except:
+                    # Fallback: iterate through graphical items
+                    for item in footprint.GraphicalItems():
+                        if item.GetLayer() == layer:
+                            courtyards.append((layer, item))
+        
+        return courtyards
+    
+    def via_collides_with_courtyards(self, via_x, via_y, via_diameter, courtyards):
+        """Check if a via at given position would collide with any courtyard.
+        
+        A collision occurs if:
+        - The via center is inside a courtyard, OR
+        - Any part of the via (center + radius) overlaps with a courtyard
+        
+        Args:
+            via_x, via_y: via center position in internal units (nanometers)
+            via_diameter: via diameter in internal units
+            courtyards: list of (layer, courtyard_object) tuples
+            
+        Returns:
+            True if collision detected, False otherwise
+        """
+        if pcbnew is None or not courtyards:
+            return False
+        
+        import math
+        
+        via_radius = via_diameter // 2
+        via_pos = pcbnew.VECTOR2I(via_x, via_y)
+        
+        for courtyard_data in courtyards:
+            # Handle both tuple format (layer, object) and plain object
+            if isinstance(courtyard_data, tuple):
+                layer, courtyard = courtyard_data
+            else:
+                courtyard = courtyard_data
+            
+            # Check if this is a SHAPE_POLY_SET (from GetCourtyard)
+            if hasattr(courtyard, 'OutlineCount'):
+                try:
+                    # Check if point is inside the polygon
+                    if courtyard.Contains(via_pos):
+                        return True
+                    
+                    # Also check bounding box with margin
+                    bbox = courtyard.BBox()
+                    if (via_x - via_radius < bbox.GetRight() and
+                        via_x + via_radius > bbox.GetLeft() and
+                        via_y - via_radius < bbox.GetBottom() and
+                        via_y + via_radius > bbox.GetTop()):
+                        # Close enough to warrant detailed check
+                        # Check distance to outline
+                        for outline_idx in range(courtyard.OutlineCount()):
+                            outline = courtyard.Outline(outline_idx)
+                            for pt_idx in range(outline.PointCount()):
+                                pt = outline.CPoint(pt_idx)
+                                dx = via_x - pt.x
+                                dy = via_y - pt.y
+                                dist = math.sqrt(dx*dx + dy*dy)
+                                if dist < via_radius:
+                                    return True
+                except Exception as e:
+                    # If anything fails, be conservative
+                    pass
+            
+            # Check different shape types for graphical items
+            if hasattr(courtyard, 'GetShape'):
+                shape = courtyard.GetShape()
+                
+                # For rectangle shapes
+                if shape == pcbnew.SHAPE_T_RECT:
+                    bbox = courtyard.GetBoundingBox()
+                    # Expand bounding box by via radius
+                    if (via_x - via_radius < bbox.GetRight() and
+                        via_x + via_radius > bbox.GetLeft() and
+                        via_y - via_radius < bbox.GetBottom() and
+                        via_y + via_radius > bbox.GetTop()):
+                        return True
+                
+                # For polygon/polyline shapes
+                elif shape == pcbnew.SHAPE_T_POLY:
+                    try:
+                        # Check if via center is inside polygon
+                        if courtyard.HitTest(via_pos):
+                            return True
+                        
+                        # Check if via edge gets close to polygon boundary
+                        bbox = courtyard.GetBoundingBox()
+                        if (via_x - via_radius < bbox.GetRight() and
+                            via_x + via_radius > bbox.GetLeft() and
+                            via_y - via_radius < bbox.GetBottom() and
+                            via_y + via_radius > bbox.GetTop()):
+                            return True
+                    except:
+                        pass
+                
+                # For circle shapes
+                elif shape == pcbnew.SHAPE_T_CIRCLE:
+                    try:
+                        center = courtyard.GetCenter()
+                        radius = courtyard.GetRadius()
+                        dx = via_x - center.x
+                        dy = via_y - center.y
+                        dist = math.sqrt(dx*dx + dy*dy)
+                        if dist < radius + via_radius:
+                            return True
+                    except:
+                        pass
+            
+            # Fallback: check bounding box with via radius margin
+            try:
+                bbox = courtyard.GetBoundingBox()
+                if (via_x - via_radius < bbox.GetRight() and
+                    via_x + via_radius > bbox.GetLeft() and
+                    via_y - via_radius < bbox.GetBottom() and
+                    via_y + via_radius > bbox.GetTop()):
+                    return True
+            except:
+                pass
+        
+        return False
 
 
 class ViaStitchingPlugin(pcbnew.ActionPlugin if pcbnew is not None else object):

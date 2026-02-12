@@ -468,6 +468,9 @@ class ViaStitchingDialog(wx.Dialog):
         vias_placed = 0
         vias_skipped = 0
         
+        # Track vias per net for debug
+        vias_per_net = {}
+        
         # Collect all courtyards (front and back) for collision detection
         courtyards = self.get_all_courtyards(board)
         
@@ -480,6 +483,17 @@ class ViaStitchingDialog(wx.Dialog):
             trace_width = first_trace.GetWidth()
             track_net = first_trace.GetNet()
             
+            # Debug: Print track info (only for USB* nets)
+            debug_this_net = track_net and (track_net.GetNetname().startswith("USB") or track_net.GetNetname().startswith("TRD"))
+            if debug_this_net:
+                print(f"\nProcessing track: net={track_net.GetNetname()}, traces={len(track)}")
+            
+            # Initialize via counter for this net
+            if track_net:
+                net_name = track_net.GetNetname()
+                if net_name not in vias_per_net:
+                    vias_per_net[net_name] = 0
+            
             # Get clearance - use the board's design rules
             # GetClearance() method on tracks returns the actual clearance for that object
             try:
@@ -491,9 +505,71 @@ class ViaStitchingDialog(wx.Dialog):
                 except:
                     clearance = 200000  # default 0.2mm in nanometers
             
+            # Check if this is a differential pair - if so, add extra offset for the pair spacing
+            # Differential pairs need vias placed outside the pair, not between the traces
+            # In KiCAD 9, we need to detect diff pairs by looking for adjacent traces with similar names
+            diff_pair_gap = 0
+            
+            # Try to find the paired trace (e.g., USB2_N <-> USB2_P)
+            if track_net and debug_this_net:
+                net_name = track_net.GetNetname()
+                # Check if this looks like a differential pair net name
+                if net_name.endswith('_N') or net_name.endswith('_P'):
+                    # Find the opposite net
+                    if net_name.endswith('_N'):
+                        pair_name = net_name[:-2] + '_P'
+                    else:
+                        pair_name = net_name[:-2] + '_N'
+                    
+                    print(f"  Detected diff pair: {net_name} <-> {pair_name}")
+                    
+                    # Find the closest trace on the paired net to estimate gap
+                    # Look through all tracks to find traces from the paired net
+                    min_gap = float('inf')
+                    for other_track in tracks:
+                        if other_track and other_track != track:
+                            other_net = other_track[0].GetNet()
+                            if other_net and other_net.GetNetname() == pair_name:
+                                # Found the paired net, measure gap between traces
+                                for trace1 in track:
+                                    for trace2 in other_track:
+                                        # Calculate approximate distance between traces
+                                        # This is simplified - just center-to-center of closest segments
+                                        p1 = trace1.GetStart()
+                                        p2 = trace2.GetStart()
+                                        dx = p2.x - p1.x
+                                        dy = p2.y - p1.y
+                                        dist = math.sqrt(dx*dx + dy*dy)
+                                        if dist < min_gap:
+                                            min_gap = dist
+                    
+                    if min_gap < float('inf'):
+                        # Subtract both trace widths to get the actual gap between edges
+                        # min_gap is center-to-center distance
+                        # gap = center_to_center - (width1/2 + width2/2) - (width1/2 + width2/2)
+                        #     = center_to_center - width1 - width2
+                        # For same width traces: gap = center_to_center - 2*trace_width
+                        diff_pair_gap = int(min_gap - 2 * trace_width)
+                        print(f"  Measured diff pair gap: {diff_pair_gap/1e6:.3f}mm (center-to-center: {min_gap/1e6:.3f}mm)")
+            
+            if debug_this_net:
+                print(f"  Trace width: {trace_width/1e6:.3f}mm")
+                print(f"  Clearance: {clearance/1e6:.3f}mm")
+                print(f"  Via diameter: {via_diameter/1e6:.3f}mm")
+            
             # Calculate offset from track center to via center
-            # offset = trace_width/2 + clearance + via_diameter/2
-            offset = trace_width // 2 + clearance + via_diameter // 2
+            # For single traces: offset = trace_width/2 + clearance + via_diameter/2
+            #   This places the via edge at clearance distance from the trace edge
+            # For differential pairs: offset = trace_width/2 + clearance + diff_pair_gap + trace_width + clearance + via_diameter/2
+            #   This places the via outside the differential pair, with clearance to the paired trace
+            if diff_pair_gap > 0:
+                # Differential pair: go past own trace edge, clearance, gap, other trace, clearance, via radius
+                offset = (trace_width // 2) + clearance + diff_pair_gap + trace_width + clearance + (via_diameter // 2)
+                if debug_this_net:
+                    print(f"  Using diff pair offset: {offset/1e6:.3f}mm (trace={trace_width/1e6:.3f}, gap={diff_pair_gap/1e6:.3f})")
+            else:
+                # Single trace: half trace width + clearance + via radius
+                offset = trace_width // 2 + clearance + via_diameter // 2
             
             # First, sort traces in the track to ensure they're in sequence
             # (assuming they should connect end-to-start)
@@ -506,6 +582,13 @@ class ViaStitchingDialog(wx.Dialog):
             for trace in sorted_track:
                 start = trace.GetStart()
                 end = trace.GetEnd()
+                
+                # Get the actual width of THIS trace segment
+                segment_trace_width = trace.GetWidth()
+                
+                # Debug: warn if trace width changes within track
+                if debug_this_net and segment_trace_width != trace_width:
+                    print(f"  Note: segment width {segment_trace_width/1e6:.3f}mm differs from first trace {trace_width/1e6:.3f}mm")
                 
                 # Calculate trace length and direction
                 dx = end.x - start.x
@@ -531,6 +614,20 @@ class ViaStitchingDialog(wx.Dialog):
                 is_diagonal = not (angle_deg < 5 or abs(angle_deg - 90) < 5)
                 effective_stitch_distance = stitch_distance * 1.5 if is_diagonal else stitch_distance
                 
+                # Recalculate offset for this segment's actual trace width
+                # For differential pairs: Add extra half trace width to avoid the paired trace
+                #   offset = trace_width/2 + clearance + via_diameter/2 + (trace_width/2 if diff pair)
+                #   The collision detection will block vias too close to paired trace
+                # For single traces: offset = trace_width/2 + clearance + via_diameter/2
+                if diff_pair_gap > 0:
+                    # Differential pair: add half trace width to push vias away from paired trace
+                    segment_offset = segment_trace_width // 2 + clearance + via_diameter // 2 + segment_trace_width // 2
+                    if debug_this_net and segment_trace_width == trace_width:
+                        print(f"  Diff pair offset: {segment_offset/1e6:.3f}mm (standard + half trace width)")
+                else:
+                    # Single trace: standard offset
+                    segment_offset = segment_trace_width // 2 + clearance + via_diameter // 2
+                
                 # Perpendicular vector (rotated 90° counterclockwise)
                 perp_x = -dir_y
                 perp_y = dir_x
@@ -548,19 +645,26 @@ class ViaStitchingDialog(wx.Dialog):
                         pos_y = round(start.y + dir_y * dist_along_segment)
                         
                         # Place two vias: one on each side (independently)
+                        # Use segment_offset which is calculated for this segment's actual width
                         for side in [-1, 1]:
-                            via_x = round(pos_x + perp_x * offset * side)
-                            via_y = round(pos_y + perp_y * offset * side)
+                            via_x = round(pos_x + perp_x * segment_offset * side)
+                            via_y = round(pos_y + perp_y * segment_offset * side)
                             
                             # Check if via would collide with any courtyard
                             # Since vias are through-holes, they must avoid ALL courtyards (F and B)
                             if self.via_collides_with_courtyards(via_x, via_y, via_diameter, courtyards):
+                                if debug_this_net:
+                                    print(f"  SKIP {track_net.GetNetname()}: courtyard collision at ({via_x/1e6:.3f}, {via_y/1e6:.3f})")
                                 vias_skipped += 1
                                 continue  # Skip this via
                             
                             # Check if via would collide with any copper on any layer
                             # Exclude all copper on the same net (vias connect to their own net)
-                            if self.via_collides_with_copper(via_x, via_y, via_diameter, copper_obstacles, clearance, track_net):
+                            # Pass the current track so we don't collide with the trace we're stitching
+                            collision_result = self.via_collides_with_copper(via_x, via_y, via_diameter, copper_obstacles, clearance, track_net, track)
+                            if collision_result:
+                                if debug_this_net:
+                                    print(f"  SKIP {track_net.GetNetname()}: copper collision at ({via_x/1e6:.3f}, {via_y/1e6:.3f})")
                                 vias_skipped += 1
                                 continue  # Skip this via
                             
@@ -577,6 +681,13 @@ class ViaStitchingDialog(wx.Dialog):
                             board.Add(via)
                             vias_placed += 1
                             
+                            # Track vias per net
+                            if track_net:
+                                vias_per_net[track_net.GetNetname()] += 1
+                            
+                            if debug_this_net:
+                                print(f"  PLACED via at ({via_x/1e6:.3f}, {via_y/1e6:.3f})")
+                            
                             # Add this via to copper_obstacles so future vias avoid it
                             # Since these are GND vias, they'll be checked with same-net clearance
                             # which is reduced compared to different-net clearance
@@ -591,6 +702,12 @@ class ViaStitchingDialog(wx.Dialog):
         
         # Refresh board
         pcbnew.Refresh()
+        
+        # Print summary for USB nets
+        print("\n=== Via Stitching Summary ===")
+        for net_name, count in sorted(vias_per_net.items()):
+            if net_name.startswith("USB"):
+                print(f"  {net_name}: {count} vias placed")
         
         return vias_placed, vias_skipped
     
@@ -862,7 +979,7 @@ class ViaStitchingDialog(wx.Dialog):
         
         return obstacles
     
-    def via_collides_with_copper(self, via_x, via_y, via_diameter, copper_obstacles, min_clearance, exclude_net):
+    def via_collides_with_copper(self, via_x, via_y, via_diameter, copper_obstacles, min_clearance, exclude_net, exclude_track=None):
         """Check if a via would collide with any copper on any layer.
         
         Args:
@@ -871,6 +988,7 @@ class ViaStitchingDialog(wx.Dialog):
             copper_obstacles: dict mapping layer_id to list of copper objects
             min_clearance: minimum clearance required in internal units
             exclude_net: pcbnew net object to exclude from collision check (vias connect to their own net)
+            exclude_track: list of trace objects to exclude (the track we're currently stitching)
             
         Returns:
             True if collision detected on ANY layer
@@ -889,6 +1007,10 @@ class ViaStitchingDialog(wx.Dialog):
         # Check all copper layers
         for layer_id, obstacles in copper_obstacles.items():
             for obstacle in obstacles:
+                # Skip if this obstacle is part of the track we're stitching
+                if exclude_track and obstacle in exclude_track:
+                    continue
+                
                 # Check if this obstacle is on the same net
                 obstacle_net = obstacle.GetNet() if hasattr(obstacle, 'GetNet') else None
                 same_net = obstacle_net and exclude_net and obstacle_net.GetNetCode() == exclude_net.GetNetCode()

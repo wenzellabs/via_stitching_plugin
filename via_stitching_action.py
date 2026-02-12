@@ -474,6 +474,9 @@ class ViaStitchingDialog(wx.Dialog):
         # Collect all courtyards (front and back) for collision detection
         courtyards = self.get_all_courtyards(board)
         
+        # Collect all length tuning areas for collision detection
+        tuning_areas = self.get_all_tuning_areas(board)
+        
         for track in tracks:
             if not track:
                 continue
@@ -624,11 +627,16 @@ class ViaStitchingDialog(wx.Dialog):
                                 vias_skipped += 1
                                 continue  # Skip this via
                             
+                            # Check if via would collide with any length tuning area
+                            if self.via_collides_with_tuning_areas(via_x, via_y, via_diameter, tuning_areas):
+                                vias_skipped += 1
+                                continue  # Skip this via
+                            
                             # Check if via would collide with any copper on any layer
-                            # Exclude all copper on the same net (vias connect to their own net)
-                            # Pass the current track so we don't collide with the trace we're stitching
-                            # This also checks against already-placed vias (in copper_obstacles)
-                            collision_result = self.via_collides_with_copper(via_x, via_y, via_diameter, copper_obstacles, clearance, track_net, track)
+                            # IMPORTANT: Only exclude the current trace segment we're stitching along
+                            # NOT the entire track - this ensures vias stay clear of length tuning wiggles
+                            # that are part of the same connected track but on different segments
+                            collision_result = self.via_collides_with_copper(via_x, via_y, via_diameter, copper_obstacles, clearance, track_net, [trace])
                             if collision_result:
                                 vias_skipped += 1
                                 continue  # Skip this via
@@ -875,6 +883,52 @@ class ViaStitchingDialog(wx.Dialog):
         
         return False
     
+    def get_all_tuning_areas(self, board):
+        """Collect all length tuning pattern areas.
+        
+        NOTE: We don't need special detection for length tuning patterns.
+        The via collision detection already avoids placing vias on or too close to
+        ANY tracks (including squiggly length tuning tracks). This function exists
+        for potential future enhancements but returns an empty list since we handle
+        track collision comprehensively.
+        
+        Args:
+            board: pcbnew board object
+            
+        Returns:
+            list of bounding box tuples (left, top, right, bottom) in internal units
+        """
+        # Return empty - track collision detection handles everything
+        return []
+    
+    def via_collides_with_tuning_areas(self, via_x, via_y, via_diameter, tuning_areas):
+        """Check if a via at given position would collide with any length tuning area.
+        
+        Args:
+            via_x, via_y: via center position in internal units (nanometers)
+            via_diameter: via diameter in internal units
+            tuning_areas: list of (left, top, right, bottom) bounding box tuples
+            
+        Returns:
+            True if collision detected, False otherwise
+        """
+        if not tuning_areas:
+            return False
+        
+        via_radius = via_diameter // 2
+        
+        for bbox in tuning_areas:
+            left, top, right, bottom = bbox
+            
+            # Check if via overlaps with the tuning area (with via radius margin)
+            if (via_x - via_radius < right and
+                via_x + via_radius > left and
+                via_y - via_radius < bottom and
+                via_y + via_radius > top):
+                return True
+        
+        return False
+    
     def get_copper_obstacles(self, board):
         """Collect all copper objects on all copper layers that could block via placement.
         
@@ -972,11 +1026,11 @@ class ViaStitchingDialog(wx.Dialog):
                 same_net = obstacle_net and exclude_net and obstacle_net.GetNetCode() == exclude_net.GetNetCode()
                 
                 # For obstacles on the same net, we still check clearance but with reduced requirement
-                # We just need to avoid overlapping the trace, not maintain full DRC clearance
+                # However, we need enough clearance to not interfere with length tuning patterns
                 if same_net:
-                    # For same net: via pad radius + minimal clearance to avoid DRC violations
-                    # Use 0.15mm (150000nm) minimum clearance even for same net
-                    SAME_NET_MIN_CLEARANCE = 150000  # 0.15mm minimum clearance to own traces
+                    # For same net: via pad radius + clearance to avoid interfering with routing
+                    # Use 0.3mm minimum clearance to stay clear of length tuning and other patterns
+                    SAME_NET_MIN_CLEARANCE = 300000  # 0.3mm minimum clearance to own traces
                     check_radius_adjusted = via_radius + SAME_NET_MIN_CLEARANCE
                 else:
                     # For different nets, use full clearance requirement

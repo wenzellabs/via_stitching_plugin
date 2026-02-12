@@ -477,6 +477,10 @@ class ViaStitchingDialog(wx.Dialog):
         # Collect all length tuning areas for collision detection
         tuning_areas = self.get_all_tuning_areas(board)
         
+        # Get board outline and edge clearance constraint
+        board_outline = self.get_board_outline(board)
+        board_edge_clearance = self.get_board_edge_clearance(board)
+        
         for track in tracks:
             if not track:
                 continue
@@ -624,6 +628,11 @@ class ViaStitchingDialog(wx.Dialog):
                             # Check if via would collide with any courtyard
                             # Since vias are through-holes, they must avoid ALL courtyards (F and B)
                             if self.via_collides_with_courtyards(via_x, via_y, via_diameter, courtyards):
+                                vias_skipped += 1
+                                continue  # Skip this via
+                            
+                            # Check if via is too close to board edge
+                            if self.via_too_close_to_board_edge(via_x, via_y, via_diameter, board_outline, board_edge_clearance):
                                 vias_skipped += 1
                                 continue  # Skip this via
                             
@@ -926,6 +935,95 @@ class ViaStitchingDialog(wx.Dialog):
                 via_y - via_radius < bottom and
                 via_y + via_radius > top):
                 return True
+        
+        return False
+    
+    def get_board_outline(self, board):
+        """Get the board outline as a polygon.
+        
+        Args:
+            board: pcbnew board object
+            
+        Returns:
+            SHAPE_POLY_SET or None if not available
+        """
+        if pcbnew is None:
+            return None
+        
+        try:
+            # Get the board outline polygon
+            outline = board.GetBoardEdgesBoundingBox()
+            return outline
+        except:
+            return None
+    
+    def get_board_edge_clearance(self, board):
+        """Get the board edge clearance constraint from design settings.
+        
+        Args:
+            board: pcbnew board object
+            
+        Returns:
+            int: edge clearance in internal units (nanometers)
+        """
+        if pcbnew is None:
+            return 500000  # Default 0.5mm
+        
+        try:
+            design_settings = board.GetDesignSettings()
+            # Edge clearance is typically 0.5mm (500000 nm)
+            # Try to get it from design rules
+            edge_clearance = design_settings.GetCopperEdgeClearance()
+            if edge_clearance and edge_clearance > 0:
+                return edge_clearance
+        except:
+            pass
+        
+        # Default to 0.5mm if can't get from settings
+        return 500000  # 0.5mm in nanometers
+    
+    def via_too_close_to_board_edge(self, via_x, via_y, via_diameter, board_outline, edge_clearance):
+        """Check if a via is too close to the board edge.
+        
+        Args:
+            via_x, via_y: via center position in internal units
+            via_diameter: via diameter in internal units
+            board_outline: board bounding box
+            edge_clearance: minimum clearance from board edge in internal units
+            
+        Returns:
+            True if too close to edge, False otherwise
+        """
+        if board_outline is None:
+            return False  # Can't check, assume OK
+        
+        # Via footprint = radius + edge clearance
+        via_radius = via_diameter // 2
+        min_distance_from_edge = via_radius + edge_clearance
+        
+        # Get board bounds
+        try:
+            left = board_outline.GetLeft()
+            top = board_outline.GetTop()
+            right = board_outline.GetRight()
+            bottom = board_outline.GetBottom()
+            
+            # Check distance to each edge
+            dist_to_left = via_x - left
+            dist_to_right = right - via_x
+            dist_to_top = via_y - top
+            dist_to_bottom = bottom - via_y
+            
+            # If any distance is less than required, via is too close
+            if (dist_to_left < min_distance_from_edge or
+                dist_to_right < min_distance_from_edge or
+                dist_to_top < min_distance_from_edge or
+                dist_to_bottom < min_distance_from_edge):
+                return True
+            
+        except Exception as e:
+            # If we can't check, assume it's OK
+            pass
         
         return False
     

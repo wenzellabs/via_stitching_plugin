@@ -519,6 +519,18 @@ class ViaStitchingDialog(wx.Dialog):
                 dir_x = dx / length
                 dir_y = dy / length
                 
+                # Check if this is a diagonal trace (not horizontal/vertical)
+                # For diagonals, we need larger spacing to avoid via-to-via collisions
+                # because the perpendicular offset creates diagonal via patterns
+                angle_rad = math.atan2(dy, dx)
+                angle_deg = abs(math.degrees(angle_rad))
+                # Normalize to 0-90 range
+                angle_deg = angle_deg % 180
+                if angle_deg > 90:
+                    angle_deg = 180 - angle_deg
+                is_diagonal = not (angle_deg < 5 or abs(angle_deg - 90) < 5)
+                effective_stitch_distance = stitch_distance * 1.5 if is_diagonal else stitch_distance
+                
                 # Perpendicular vector (rotated 90° counterclockwise)
                 perp_x = -dir_y
                 perp_y = dir_x
@@ -532,13 +544,13 @@ class ViaStitchingDialog(wx.Dialog):
                     dist_along_segment = next_via_distance - segment_start_distance
                     
                     if dist_along_segment >= 0:  # Via position is within this segment
-                        pos_x = int(start.x + dir_x * dist_along_segment)
-                        pos_y = int(start.y + dir_y * dist_along_segment)
+                        pos_x = round(start.x + dir_x * dist_along_segment)
+                        pos_y = round(start.y + dir_y * dist_along_segment)
                         
                         # Place two vias: one on each side (independently)
                         for side in [-1, 1]:
-                            via_x = int(pos_x + perp_x * offset * side)
-                            via_y = int(pos_y + perp_y * offset * side)
+                            via_x = round(pos_x + perp_x * offset * side)
+                            via_y = round(pos_y + perp_y * offset * side)
                             
                             # Check if via would collide with any courtyard
                             # Since vias are through-holes, they must avoid ALL courtyards (F and B)
@@ -566,12 +578,13 @@ class ViaStitchingDialog(wx.Dialog):
                             vias_placed += 1
                             
                             # Add this via to copper_obstacles so future vias avoid it
-                            # Add to all copper layers since it's a through via
+                            # Since these are GND vias, they'll be checked with same-net clearance
+                            # which is reduced compared to different-net clearance
                             for layer in copper_obstacles.keys():
                                 copper_obstacles[layer].append(via)
                     
-                    # Move to next stitch position
-                    next_via_distance += stitch_distance
+                    # Move to next stitch position (use effective distance for diagonals)
+                    next_via_distance += effective_stitch_distance
                 
                 # Update total distance for next trace
                 total_distance = segment_end_distance
@@ -876,10 +889,20 @@ class ViaStitchingDialog(wx.Dialog):
         # Check all copper layers
         for layer_id, obstacles in copper_obstacles.items():
             for obstacle in obstacles:
-                # Skip if this obstacle is on the same net (vias connect to their own net)
+                # Check if this obstacle is on the same net
                 obstacle_net = obstacle.GetNet() if hasattr(obstacle, 'GetNet') else None
-                if obstacle_net and exclude_net and obstacle_net.GetNetCode() == exclude_net.GetNetCode():
-                    continue
+                same_net = obstacle_net and exclude_net and obstacle_net.GetNetCode() == exclude_net.GetNetCode()
+                
+                # For obstacles on the same net, we still check clearance but with reduced requirement
+                # We just need to avoid overlapping the trace, not maintain full DRC clearance
+                if same_net:
+                    # For same net: via pad radius + minimal clearance to avoid DRC violations
+                    # Use 0.15mm (150000nm) minimum clearance even for same net
+                    SAME_NET_MIN_CLEARANCE = 150000  # 0.15mm minimum clearance to own traces
+                    check_radius_adjusted = via_radius + SAME_NET_MIN_CLEARANCE
+                else:
+                    # For different nets, use full clearance requirement
+                    check_radius_adjusted = check_radius
                 
                 # Determine obstacle type and check collision
                 obstacle_type = obstacle.Type()
@@ -894,7 +917,7 @@ class ViaStitchingDialog(wx.Dialog):
                     dist = self.point_to_segment_distance(via_x, via_y, start.x, start.y, end.x, end.y)
                     
                     # Check if too close (via footprint + track half-width)
-                    if dist < check_radius + width // 2:
+                    if dist < check_radius_adjusted + width // 2:
                         return True
                 
                 # For vias
@@ -907,7 +930,7 @@ class ViaStitchingDialog(wx.Dialog):
                     dist = math.sqrt(dx*dx + dy*dy)
                     
                     # Check if vias would overlap (both radii + clearance)
-                    if dist < check_radius + via_diameter_other // 2 + min_clearance:
+                    if dist < check_radius_adjusted + via_diameter_other // 2 + min_clearance:
                         return True
                 
                 # For pads
@@ -923,7 +946,7 @@ class ViaStitchingDialog(wx.Dialog):
                     pad_size = obstacle.GetSize()
                     pad_radius = max(pad_size.x, pad_size.y) // 2
                     
-                    if dist < check_radius + pad_radius:
+                    if dist < check_radius_adjusted + pad_radius:
                         return True
                 
                 # Zones are NOT checked - vias can be placed in zones

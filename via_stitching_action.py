@@ -1066,20 +1066,40 @@ class ViaStitchingDialog(wx.Dialog):
                     if dist < check_radius_adjusted + via_diameter_other // 2:
                         return True
                 
-                # For pads
+                # For pads (including NPTH mechanical holes)
                 elif obstacle_type == pcbnew.PCB_PAD_T:
                     pad_pos = obstacle.GetPosition()
                     
-                    # Simple bounding box check + distance
                     dx = via_x - pad_pos.x
                     dy = via_y - pad_pos.y
                     dist = math.sqrt(dx*dx + dy*dy)
                     
-                    # Get pad size (approximation)
+                    # Get pad size (approximation for circular/oval pads)
                     pad_size = obstacle.GetSize()
                     pad_radius = max(pad_size.x, pad_size.y) // 2
                     
-                    if dist < check_radius_adjusted + pad_radius:
+                    # Get pad clearance - pads have their own clearance zones
+                    try:
+                        pad_clearance = obstacle.GetLocalClearance()
+                        if pad_clearance is None or pad_clearance == 0:
+                            pad_clearance = min_clearance  # Use default if not set
+                    except:
+                        pad_clearance = min_clearance
+                    
+                    # Get soldermask expansion - the soldermask opening is larger than the pad
+                    try:
+                        soldermask_margin = obstacle.GetSolderMaskExpansion()
+                        if soldermask_margin is None:
+                            soldermask_margin = 0
+                    except:
+                        soldermask_margin = 0
+                    
+                    # Total keepout radius = pad_radius + max(clearance, soldermask_expansion)
+                    # We need to stay clear of both the clearance zone AND soldermask opening
+                    pad_keepout = max(pad_clearance, abs(soldermask_margin))
+                    
+                    # Check distance: via_radius + via_clearance + pad_radius + pad_keepout
+                    if dist < check_radius_adjusted + pad_radius + pad_keepout:
                         return True
                 
                 # Zones are NOT checked - vias can be placed in zones

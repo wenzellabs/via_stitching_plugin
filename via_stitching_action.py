@@ -480,13 +480,17 @@ class ViaStitchingDialog(wx.Dialog):
             
             # Get the first trace to determine net class clearance and trace width
             first_trace = track[0]
-            trace_width = first_trace.GetWidth()
             track_net = first_trace.GetNet()
             
-            # Debug: Print track info (only for USB* nets)
-            debug_this_net = track_net and (track_net.GetNetname().startswith("USB") or track_net.GetNetname().startswith("TRD"))
+            # Find the maximum trace width in the track (handles mixed-width tracks like USBOTG_ID)
+            trace_width = max(trace.GetWidth() for trace in track)
+            
+            # Debug: Print track info (only for USBOTG_ID)
+            debug_this_net = track_net and track_net.GetNetname() == "USBOTG_ID"
             if debug_this_net:
+                widths = [trace.GetWidth() for trace in track]
                 print(f"\nProcessing track: net={track_net.GetNetname()}, traces={len(track)}")
+                print(f"  Width range: {min(widths)/1e6:.3f}mm - {max(widths)/1e6:.3f}mm (using max: {trace_width/1e6:.3f}mm)")
             
             # Initialize via counter for this net
             if track_net:
@@ -583,13 +587,6 @@ class ViaStitchingDialog(wx.Dialog):
                 start = trace.GetStart()
                 end = trace.GetEnd()
                 
-                # Get the actual width of THIS trace segment
-                segment_trace_width = trace.GetWidth()
-                
-                # Debug: warn if trace width changes within track
-                if debug_this_net and segment_trace_width != trace_width:
-                    print(f"  Note: segment width {segment_trace_width/1e6:.3f}mm differs from first trace {trace_width/1e6:.3f}mm")
-                
                 # Calculate trace length and direction
                 dx = end.x - start.x
                 dy = end.y - start.y
@@ -618,15 +615,19 @@ class ViaStitchingDialog(wx.Dialog):
                 # For differential pairs: Add extra half trace width to avoid the paired trace
                 #   offset = trace_width/2 + clearance + via_diameter/2 + (trace_width/2 if diff pair)
                 #   The collision detection will block vias too close to paired trace
-                # For single traces: offset = trace_width/2 + clearance + via_diameter/2
+                # For single traces: offset = trace_width/2 + effective_clearance + via_diameter/2
+                #   Use minimum 0.2mm clearance for better same-net spacing
                 if diff_pair_gap > 0:
                     # Differential pair: add half trace width to push vias away from paired trace
-                    segment_offset = segment_trace_width // 2 + clearance + via_diameter // 2 + segment_trace_width // 2
-                    if debug_this_net and segment_trace_width == trace_width:
+                    segment_offset = trace_width // 2 + clearance + via_diameter // 2 + trace_width // 2
+                    if debug_this_net:
                         print(f"  Diff pair offset: {segment_offset/1e6:.3f}mm (standard + half trace width)")
                 else:
-                    # Single trace: standard offset
-                    segment_offset = segment_trace_width // 2 + clearance + via_diameter // 2
+                    # Single trace: use minimum 0.2mm clearance for same-net spacing
+                    effective_clearance = max(clearance, int(0.2e6))  # 0.2mm minimum
+                    segment_offset = trace_width // 2 + effective_clearance + via_diameter // 2
+                    if debug_this_net:
+                        print(f"  Single trace offset: {segment_offset/1e6:.3f}mm (using {effective_clearance/1e6:.3f}mm clearance)")
                 
                 # Perpendicular vector (rotated 90° counterclockwise)
                 perp_x = -dir_y

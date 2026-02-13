@@ -451,6 +451,11 @@ class ViaStitchingDialog(wx.Dialog):
         via_drill = int(via_drill_mm * 1e6)
         via_diameter = int(via_diameter_mm * 1e6)
         
+        # Add 50µm safety margin to via diameter for all collision calculations
+        # This accounts for rounding errors and manufacturing tolerances
+        VIA_SAFETY_MARGIN = 50000  # 50 micrometers = 0.05mm
+        via_diameter_with_margin = via_diameter + VIA_SAFETY_MARGIN
+        
         # Find GND net
         gnd_net = None
         netinfo = board.GetNetInfo()
@@ -558,12 +563,13 @@ class ViaStitchingDialog(wx.Dialog):
             #   This places the via edge at clearance distance from the trace edge
             # For differential pairs: offset = trace_width/2 + clearance + diff_pair_gap + trace_width + clearance + via_diameter/2
             #   This places the via outside the differential pair, with clearance to the paired trace
+            # NOTE: Use via_diameter_with_margin for calculations to ensure proper clearance
             if diff_pair_gap > 0:
                 # Differential pair: go past own trace edge, clearance, gap, other trace, clearance, via radius
-                offset = (trace_width // 2) + clearance + diff_pair_gap + trace_width + clearance + (via_diameter // 2)
+                offset = (trace_width // 2) + clearance + diff_pair_gap + trace_width + clearance + (via_diameter_with_margin // 2)
             else:
                 # Single trace: half trace width + clearance + via radius
-                offset = trace_width // 2 + clearance + via_diameter // 2
+                offset = trace_width // 2 + clearance + via_diameter_with_margin // 2
             
             # First, sort traces in the track to ensure they're in sequence
             # (assuming they should connect end-to-start)
@@ -595,13 +601,14 @@ class ViaStitchingDialog(wx.Dialog):
                 #   The collision detection will block vias too close to paired trace
                 # For single traces: offset = trace_width/2 + effective_clearance + via_diameter/2
                 #   Use minimum 0.2mm clearance for better same-net spacing
+                # NOTE: Use via_diameter_with_margin for calculations to ensure proper clearance
                 if diff_pair_gap > 0:
                     # Differential pair: add half trace width to push vias away from paired trace
-                    segment_offset = trace_width // 2 + clearance + via_diameter // 2 + trace_width // 2
+                    segment_offset = trace_width // 2 + clearance + via_diameter_with_margin // 2 + trace_width // 2
                 else:
                     # Single trace: use minimum 0.2mm clearance for same-net spacing
                     effective_clearance = max(clearance, int(0.2e6))  # 0.2mm minimum
-                    segment_offset = trace_width // 2 + effective_clearance + via_diameter // 2
+                    segment_offset = trace_width // 2 + effective_clearance + via_diameter_with_margin // 2
                 
                 # Perpendicular vector (rotated 90° counterclockwise)
                 perp_x = -dir_y
@@ -627,17 +634,18 @@ class ViaStitchingDialog(wx.Dialog):
                             
                             # Check if via would collide with any courtyard
                             # Since vias are through-holes, they must avoid ALL courtyards (F and B)
-                            if self.via_collides_with_courtyards(via_x, via_y, via_diameter, courtyards):
+                            # Use via_diameter_with_margin for collision checks
+                            if self.via_collides_with_courtyards(via_x, via_y, via_diameter_with_margin, courtyards):
                                 vias_skipped += 1
                                 continue  # Skip this via
                             
                             # Check if via is too close to board edge
-                            if self.via_too_close_to_board_edge(via_x, via_y, via_diameter, board_outline, board_edge_clearance):
+                            if self.via_too_close_to_board_edge(via_x, via_y, via_diameter_with_margin, board_outline, board_edge_clearance):
                                 vias_skipped += 1
                                 continue  # Skip this via
                             
                             # Check if via would collide with any length tuning area
-                            if self.via_collides_with_tuning_areas(via_x, via_y, via_diameter, tuning_areas):
+                            if self.via_collides_with_tuning_areas(via_x, via_y, via_diameter_with_margin, tuning_areas):
                                 vias_skipped += 1
                                 continue  # Skip this via
                             
@@ -645,7 +653,8 @@ class ViaStitchingDialog(wx.Dialog):
                             # IMPORTANT: Only exclude the current trace segment we're stitching along
                             # NOT the entire track - this ensures vias stay clear of length tuning wiggles
                             # that are part of the same connected track but on different segments
-                            collision_result = self.via_collides_with_copper(via_x, via_y, via_diameter, copper_obstacles, clearance, track_net, [trace])
+                            # Use via_diameter_with_margin for collision checks
+                            collision_result = self.via_collides_with_copper(via_x, via_y, via_diameter_with_margin, copper_obstacles, clearance, track_net, [trace])
                             if collision_result:
                                 vias_skipped += 1
                                 continue  # Skip this via

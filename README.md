@@ -1,15 +1,39 @@
 # via_stitching_plugin
 
-Small KiCad ActionPlugin (skeleton) that adds a toolbar button and a dialog.
+<img src="via_stitching_plugin_example.png" alt="via stitching plugin example">
 
-## Icon
-The plugin includes `via_icon.png` — a 64×64 icon with a green background, gold/yellow ring, and black center dot to resemble a via. You can convert this to any format KiCad prefers or replace it with your own icon.
+a vibe-coded KiCAD ActionPlugin that adds GND vias along traces - so called "via stitching".
+
+if not all alarm bells have been triggered yet: **this is experimental code**
+
+**use at your own risk**
+
+**thoroughly go through DRC after applying**
+
+<img src="via_stitching_plugin_menu.png" alt="via stitching plugin menu">
+
+## collision detection "we" implemented along the way
+- **courtyard avoidance** - respects component keepout zones (the pink F&B CrtYd)
+- **copper clearance** - maintains proper spacing from all copper on all layers
+- **pad clearance** - includes soldermask expansion zones and pad clearances
+- **board edge clearance** - respects edge constraints from design rules
+- **via-to-via spacing** - prevents overlapping vias
+- **length tuning preservation** - avoids placing vias on meandered traces
 
 ## Installation
-1. Copy the `via_stitching_plugin` folder into one of KiCad's plugin folders, or add its parent folder to KiCad's plugin search paths. Typical user plugin paths on Linux:
-   - ~/.local/share/kicad/9.0/scripting/plugins/  (adjust for KiCad version)
+1. copy the `via_stitching_plugin` folder into one of KiCAD's plugin folders, or add its parent folder to KiCAD's plugin search paths. Typical user plugin paths on Linux:
+   - ~/.local/share/kicad/9.0/3rdparty/plugins
 
-2. Restart KiCad and open the PCB editor. The plugin appears under Tools (and as a toolbar button if supported).
+2. restart KiCAD or at least the PCB editor. The plugin appears under Tools->External_Plugins and as a toolbar button.
 
-## Notes
-- This is a UI skeleton only: clicking "Go!" currently shows a summary dialog. Implementations of via stitching will be added next.
+## Icon
+
+<img src="via_icon.png" alt="via icon">
+ 
+## License
+
+same as KiCAD itself.
+
+GNU General Public License (GPL) Version 3
+
+see [LICENSE](LICENSE)

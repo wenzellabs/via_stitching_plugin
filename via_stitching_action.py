@@ -20,31 +20,53 @@ class ViaStitchingDialog(wx.Dialog):
         v = wx.BoxSizer(wx.VERTICAL)
 
         # Instruction
-        st = wx.StaticText(self.panel, label="Select options:")
+        st = wx.StaticText(self.panel, label="select options:")
         v.Add(st, flag=wx.ALL, border=8)
+
+        # Horizontal separator line
+        v.Add(wx.StaticLine(self.panel), flag=wx.EXPAND | wx.LEFT | wx.RIGHT, border=10)
+        
+        # Section label: cleanup
+        lbl_cleanup_section = wx.StaticText(self.panel, label="cleanup:")
+        font = lbl_cleanup_section.GetFont()
+        font.SetWeight(wx.FONTWEIGHT_BOLD)
+        lbl_cleanup_section.SetFont(font)
+        v.Add(lbl_cleanup_section, flag=wx.LEFT | wx.TOP, border=10)
 
         # Checkboxes with descriptive internal names
         self.cb_remove_existing_vias = wx.CheckBox(self.panel, label='remove all existing GND vias')
-        self.cb_stitch_top = wx.CheckBox(self.panel, label='stitch around top traces')
-        self.cb_stitch_inner = wx.CheckBox(self.panel, label='stitch around inner traces')
-        self.cb_stitch_bot = wx.CheckBox(self.panel, label='stitch around bottom traces')
+        v.Add(self.cb_remove_existing_vias, flag=wx.LEFT | wx.TOP, border=10)
+        
+        # Horizontal separator line
+        v.Add(wx.StaticLine(self.panel), flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+        
+        # Section label: stitch along traces
+        lbl_trace_section = wx.StaticText(self.panel, label="stitch along traces:")
+        lbl_trace_section.SetFont(font)
+        v.Add(lbl_trace_section, flag=wx.LEFT | wx.TOP, border=10)
+        
+        self.cb_stitch_top = wx.CheckBox(self.panel, label='stitch along top traces')
+        self.cb_stitch_inner = wx.CheckBox(self.panel, label='stitch along inner traces')
+        self.cb_stitch_bot = wx.CheckBox(self.panel, label='stitch along bottom traces')
         
         # Set default checked states
         self.cb_stitch_top.SetValue(True)
         self.cb_stitch_inner.SetValue(True)
         self.cb_stitch_bot.SetValue(True)
         
-        v.Add(self.cb_remove_existing_vias, flag=wx.LEFT | wx.TOP, border=10)
         v.Add(self.cb_stitch_top, flag=wx.LEFT | wx.TOP, border=10)
         v.Add(self.cb_stitch_inner, flag=wx.LEFT | wx.TOP, border=10)
         v.Add(self.cb_stitch_bot, flag=wx.LEFT | wx.TOP, border=10)
         
-        # Numeric parameters
+        # Horizontal separator line (before trace parameters)
+        # Parameters section (no additional label needed - already have "Stitch along traces:" above)
+        
+        # Numeric parameters for trace stitching
         params_sizer = wx.FlexGridSizer(rows=3, cols=3, hgap=5, vgap=8)
         
-        # Stitch distance
+        # Stitch distance along traces
         lbl_distance = wx.StaticText(self.panel, label="stitch distance along traces:")
-        self.txt_stitch_distance = wx.TextCtrl(self.panel, value="10.0", size=(80, -1))
+        self.txt_stitch_distance = wx.TextCtrl(self.panel, value="3.0", size=(80, -1))
         lbl_distance_unit = wx.StaticText(self.panel, label="mm")
         params_sizer.Add(lbl_distance, flag=wx.ALIGN_CENTER_VERTICAL)
         params_sizer.Add(self.txt_stitch_distance, flag=wx.ALIGN_CENTER_VERTICAL)
@@ -67,6 +89,30 @@ class ViaStitchingDialog(wx.Dialog):
         params_sizer.Add(lbl_diameter_unit, flag=wx.ALIGN_CENTER_VERTICAL)
         
         v.Add(params_sizer, flag=wx.LEFT | wx.TOP | wx.RIGHT, border=10)
+        
+        # Another horizontal separator line
+        v.Add(wx.StaticLine(self.panel), flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+        
+        # Section label: grid stitching
+        lbl_grid_section = wx.StaticText(self.panel, label="grid stitching in planes:")
+        lbl_grid_section.SetFont(font)
+        v.Add(lbl_grid_section, flag=wx.LEFT | wx.TOP, border=10)
+        
+        # Grid stitching checkbox
+        self.cb_grid_stitch = wx.CheckBox(self.panel, label='enable grid stitching')
+        self.cb_grid_stitch.SetValue(True)  # Enabled by default
+        v.Add(self.cb_grid_stitch, flag=wx.LEFT | wx.TOP, border=10)
+        
+        # Grid stitching parameter
+        grid_sizer = wx.FlexGridSizer(rows=1, cols=3, hgap=5, vgap=8)
+        lbl_grid_distance = wx.StaticText(self.panel, label="grid spacing:")
+        self.txt_grid_distance = wx.TextCtrl(self.panel, value="10.0", size=(80, -1))
+        lbl_grid_distance_unit = wx.StaticText(self.panel, label="mm")
+        grid_sizer.Add(lbl_grid_distance, flag=wx.ALIGN_CENTER_VERTICAL)
+        grid_sizer.Add(self.txt_grid_distance, flag=wx.ALIGN_CENTER_VERTICAL)
+        grid_sizer.Add(lbl_grid_distance_unit, flag=wx.ALIGN_CENTER_VERTICAL)
+        
+        v.Add(grid_sizer, flag=wx.LEFT | wx.TOP | wx.RIGHT, border=10)
 
         # Spacer
         v.Add((10, 10), proportion=1)
@@ -74,8 +120,8 @@ class ViaStitchingDialog(wx.Dialog):
         # Buttons at bottom
         hs = wx.BoxSizer(wx.HORIZONTAL)
         hs.AddStretchSpacer()
-        btn_cancel = wx.Button(self.panel, label="Cancel")
-        btn_go = wx.Button(self.panel, label="Go!")
+        btn_cancel = wx.Button(self.panel, label="cancel")
+        btn_go = wx.Button(self.panel, label="go!")
         hs.Add(btn_cancel, flag=wx.RIGHT, border=8)
         hs.Add(btn_go)
 
@@ -189,6 +235,31 @@ class ViaStitchingDialog(wx.Dialog):
                         messages.append("\nNote: Many vias were skipped due to insufficient clearance.")
                         messages.append("This usually means the PCB is very dense in those areas.")
                         messages.append("Consider using smaller vias or increasing trace spacing.")
+            
+            # Grid stitching in planes
+            if self.cb_grid_stitch.IsChecked():
+                try:
+                    grid_spacing = float(self.txt_grid_distance.GetValue())
+                except ValueError:
+                    wx.MessageBox("Invalid grid spacing value. Please enter a valid number.", "Error", wx.OK | wx.ICON_ERROR, self)
+                    self.EndModal(wx.ID_CANCEL)
+                    return
+                
+                # Collect copper obstacles once for all layers (reuse from trace stitching if available)
+                if 'copper_obstacles' not in locals():
+                    copper_obstacles = self.get_copper_obstacles(board)
+                
+                grid_vias_placed, grid_vias_skipped = self.stitch_grid(board, grid_spacing, 
+                                                                        via_drill, via_diameter, 
+                                                                        copper_obstacles)
+                
+                if grid_vias_placed > 0:
+                    total_attempted = grid_vias_placed + grid_vias_skipped
+                    success_rate = (grid_vias_placed * 100.0) / total_attempted if total_attempted > 0 else 0
+                    messages.append(f"\nGrid stitching:")
+                    messages.append(f"{grid_vias_placed} grid vias placed")
+                    messages.append(f"{grid_vias_skipped} grid vias skipped (clearance issues)")
+                    messages.append(f"Success rate: {success_rate:.1f}%")
             
             if messages:
                 msg = "\n".join(messages) + "\n\nOperation completed successfully."
@@ -482,6 +553,9 @@ class ViaStitchingDialog(wx.Dialog):
         # Collect all length tuning areas for collision detection
         tuning_areas = self.get_all_tuning_areas(board)
         
+        # Collect all via keepout zones for collision detection
+        via_keepout_zones = self.get_via_keepout_zones(board)
+        
         # Get board outline and edge clearance constraint
         board_outline = self.get_board_outline(board)
         board_edge_clearance = self.get_board_edge_clearance(board)
@@ -649,6 +723,11 @@ class ViaStitchingDialog(wx.Dialog):
                                 vias_skipped += 1
                                 continue  # Skip this via
                             
+                            # Check if via is inside a via keepout zone
+                            if self.via_in_keepout_zone(via_x, via_y, via_diameter_with_margin, via_keepout_zones):
+                                vias_skipped += 1
+                                continue  # Skip this via
+                            
                             # Check if via would collide with any copper on any layer
                             # IMPORTANT: Only exclude the current trace segment we're stitching along
                             # NOT the entire track - this ensures vias stay clear of length tuning wiggles
@@ -754,6 +833,154 @@ class ViaStitchingDialog(wx.Dialog):
                 break
         
         return sorted_traces
+    
+    def stitch_grid(self, board, grid_spacing_mm, via_drill_mm, via_diameter_mm, copper_obstacles):
+        """Place stitching vias in a grid pattern across the board.
+        
+        Args:
+            board: pcbnew board object
+            grid_spacing_mm: spacing between grid points in mm
+            via_drill_mm: via drill diameter in mm
+            via_diameter_mm: via diameter in mm
+            copper_obstacles: precomputed copper obstacles dict
+            
+        Returns:
+            tuple: (number of vias placed, number of vias skipped)
+        """
+        if pcbnew is None:
+            return 0, 0
+        
+        import math
+        
+        # Convert mm to internal units (nanometers)
+        grid_spacing = int(grid_spacing_mm * 1e6)
+        via_drill = int(via_drill_mm * 1e6)
+        via_diameter = int(via_diameter_mm * 1e6)
+        
+        # Add 50µm safety margin to via diameter for all collision calculations
+        VIA_SAFETY_MARGIN = 50000  # 50 micrometers = 0.05mm
+        via_diameter_with_margin = via_diameter + VIA_SAFETY_MARGIN
+        
+        # Find GND net
+        gnd_net = None
+        netinfo = board.GetNetInfo()
+        for net_code in range(netinfo.GetNetCount()):
+            net = netinfo.GetNetItem(net_code)
+            if net is not None:
+                net_name = net.GetNetname().upper()
+                if net_name in ['GND', 'GROUND', 'VSS']:
+                    gnd_net = net
+                    break
+        
+        if gnd_net is None:
+            return 0, 0
+        
+        vias_placed = 0
+        vias_skipped = 0
+        
+        # Collect all courtyards for collision detection
+        courtyards = self.get_all_courtyards(board)
+        
+        # Collect all length tuning areas for collision detection
+        tuning_areas = self.get_all_tuning_areas(board)
+        
+        # Collect all via keepout zones for collision detection
+        via_keepout_zones = self.get_via_keepout_zones(board)
+        
+        # Get board outline and edge clearance constraint
+        board_outline = self.get_board_outline(board)
+        board_edge_clearance = self.get_board_edge_clearance(board)
+        
+        # Get board bounding box to determine grid extent
+        bbox = board.GetBoardEdgesBoundingBox()
+        min_x = bbox.GetLeft()
+        min_y = bbox.GetTop()
+        max_x = bbox.GetRight()
+        max_y = bbox.GetBottom()
+        
+        # Use default clearance from design settings
+        try:
+            clearance = board.GetDesignSettings().GetDefault().GetClearance()
+        except:
+            clearance = int(0.2e6)  # 0.2mm default
+        
+        # Grid stitching uses same-net clearance (we're placing GND vias on GND planes)
+        # Use a minimum of 0.35mm for same-net clearance
+        same_net_clearance = max(clearance, int(0.35e6))  # 0.35mm minimum
+        
+        # Iterate over grid points
+        y = min_y
+        while y <= max_y:
+            x = min_x
+            while x <= max_x:
+                via_x = int(x)
+                via_y = int(y)
+                
+                # Check if position is within board outline
+                if not self.point_inside_board(via_x, via_y, board_outline):
+                    x += grid_spacing
+                    continue
+                
+                # Check if via would collide with any courtyard
+                if self.via_collides_with_courtyards(via_x, via_y, via_diameter_with_margin, courtyards):
+                    vias_skipped += 1
+                    x += grid_spacing
+                    continue
+                
+                # Check if via is too close to board edge
+                if self.via_too_close_to_board_edge(via_x, via_y, via_diameter_with_margin, board_outline, board_edge_clearance):
+                    vias_skipped += 1
+                    x += grid_spacing
+                    continue
+                
+                # Check if via would collide with any length tuning area
+                if self.via_collides_with_tuning_areas(via_x, via_y, via_diameter_with_margin, tuning_areas):
+                    vias_skipped += 1
+                    x += grid_spacing
+                    continue
+                
+                # Check if via is inside a via keepout zone
+                if self.via_in_keepout_zone(via_x, via_y, via_diameter_with_margin, via_keepout_zones):
+                    vias_skipped += 1
+                    x += grid_spacing
+                    continue
+                
+                # Check if via would collide with any copper on any layer
+                # For grid stitching, we exclude the GND net (same-net clearance)
+                # No track exclusion needed since we're not stitching along traces
+                collision_result = self.via_collides_with_copper(via_x, via_y, via_diameter_with_margin, 
+                                                                 copper_obstacles, same_net_clearance, 
+                                                                 gnd_net, None)
+                if collision_result:
+                    vias_skipped += 1
+                    x += grid_spacing
+                    continue
+                
+                # Create via
+                via = pcbnew.PCB_VIA(board)
+                via.SetPosition(pcbnew.VECTOR2I(via_x, via_y))
+                via.SetDrill(via_drill)
+                via.SetWidth(via_diameter)
+                via.SetNet(gnd_net)
+                
+                # Set via to span all layers (through via)
+                via.SetLayerPair(pcbnew.F_Cu, pcbnew.B_Cu)
+                
+                board.Add(via)
+                vias_placed += 1
+                
+                # Add this via to copper_obstacles so future vias avoid it
+                for layer in copper_obstacles.keys():
+                    copper_obstacles[layer].append(via)
+                
+                x += grid_spacing
+            
+            y += grid_spacing
+        
+        # Refresh board
+        pcbnew.Refresh()
+        
+        return vias_placed, vias_skipped
     
     def get_all_courtyards(self, board):
         """Collect all courtyard polygons from footprints (front and back).
@@ -919,6 +1146,88 @@ class ViaStitchingDialog(wx.Dialog):
         # Return empty - track collision detection handles everything
         return []
     
+    def get_via_keepout_zones(self, board):
+        """Collect all zones that are rule areas (keepouts) prohibiting vias.
+        
+        Args:
+            board: pcbnew board object
+            
+        Returns:
+            list of ZONE objects that prohibit vias
+        """
+        if pcbnew is None:
+            return []
+        
+        via_keepout_zones = []
+        
+        try:
+            # Iterate through all zones on the board
+            for zone in board.Zones():
+                # Check if it's a rule area (keepout zone)
+                if zone.GetIsRuleArea():
+                    # Check if vias are prohibited in this zone
+                    if zone.GetDoNotAllowVias():
+                        via_keepout_zones.append(zone)
+        except Exception as e:
+            # If something goes wrong, just return empty list
+            pass
+        
+        return via_keepout_zones
+    
+    def via_in_keepout_zone(self, via_x, via_y, via_diameter, keepout_zones):
+        """Check if a via at given position would violate a via keepout zone.
+        
+        A violation occurs if the via or any part of it is inside the keepout zone,
+        OR if it's too close to the keepout zone boundary.
+        
+        Args:
+            via_x, via_y: via center position in internal units
+            via_diameter: via diameter in internal units (already includes safety margin)
+            keepout_zones: list of ZONE objects that prohibit vias
+            
+        Returns:
+            True if via violates keepout zone, False otherwise
+        """
+        if pcbnew is None or not keepout_zones:
+            return False
+        
+        import math
+        
+        via_pos = pcbnew.VECTOR2I(via_x, via_y)
+        via_radius = via_diameter // 2
+        
+        for zone in keepout_zones:
+            try:
+                # Get the zone outline
+                outline = zone.Outline()
+                
+                # Check if via center is inside the zone outline
+                # If center is inside, definitely a violation
+                if outline.Contains(via_pos):
+                    return True
+                
+                # Check distance from via edge to zone boundary
+                # We need to ensure via_radius distance from the zone edge
+                # This is more complex - we need to check if any point on the via circumference
+                # is inside the zone or too close to its boundary
+                
+                # Simple approach: check points around the via circumference
+                num_points = 16  # Check 16 points around the circle
+                for i in range(num_points):
+                    angle = 2 * math.pi * i / num_points
+                    check_x = int(via_x + via_radius * math.cos(angle))
+                    check_y = int(via_y + via_radius * math.sin(angle))
+                    check_pos = pcbnew.VECTOR2I(check_x, check_y)
+                    
+                    if outline.Contains(check_pos):
+                        return True
+                
+            except Exception as e:
+                # If we can't check, be conservative and skip
+                continue
+        
+        return False
+    
     def via_collides_with_tuning_areas(self, via_x, via_y, via_diameter, tuning_areas):
         """Check if a via at given position would collide with any length tuning area.
         
@@ -965,6 +1274,27 @@ class ViaStitchingDialog(wx.Dialog):
             return outline
         except:
             return None
+    
+    def point_inside_board(self, x, y, board_outline):
+        """Check if a point is inside the board outline.
+        
+        Args:
+            x, y: point coordinates in internal units
+            board_outline: board bounding box
+            
+        Returns:
+            True if point is inside board, False otherwise
+        """
+        if board_outline is None:
+            return True  # Can't check, assume inside
+        
+        # Simple bounding box check
+        # For a more sophisticated check, we'd need the actual board polygon
+        # but the bounding box is sufficient for grid stitching
+        return (x >= board_outline.GetLeft() and 
+                x <= board_outline.GetRight() and
+                y >= board_outline.GetTop() and 
+                y <= board_outline.GetBottom())
     
     def get_board_edge_clearance(self, board):
         """Get the board edge clearance constraint from design settings.

@@ -19,6 +19,8 @@ if not all alarm bells have been triggered yet: **this is experimental code**
 - **board edge clearance** - respects edge constraints from design rules
 - **via-to-via spacing** - prevents overlapping vias
 - **length tuning preservation** - avoids placing vias on meandered traces
+- **via keepout zones** - respects rule areas that prohibit via placement
+- **keepout zones** - avoids placing vias on via keepout zones
 
 ## Installation
 1. copy the `via_stitching_plugin` folder into one of KiCAD's plugin folders, or add its parent folder to KiCAD's plugin search paths. Typical user plugin paths on Linux:

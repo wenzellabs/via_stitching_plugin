@@ -225,16 +225,9 @@ class ViaStitchingDialog(wx.Dialog):
                         total_vias_skipped += vias_skipped
                 
                 if total_vias_placed > 0:
-                    total_attempted = total_vias_placed + total_vias_skipped
-                    success_rate = (total_vias_placed * 100.0) / total_attempted if total_attempted > 0 else 0
+                    messages.append(f"\nTrack stitching:")
                     messages.append(f"\n{total_vias_placed} stitching vias placed")
                     messages.append(f"{total_vias_skipped} vias skipped (clearance issues)")
-                    messages.append(f"Success rate: {success_rate:.1f}%")
-                    
-                    if total_vias_skipped > total_vias_placed:
-                        messages.append("\nNote: Many vias were skipped due to insufficient clearance.")
-                        messages.append("This usually means the PCB is very dense in those areas.")
-                        messages.append("Consider using smaller vias or increasing trace spacing.")
             
             # Grid stitching in planes
             if self.cb_grid_stitch.IsChecked():
@@ -254,12 +247,9 @@ class ViaStitchingDialog(wx.Dialog):
                                                                         copper_obstacles)
                 
                 if grid_vias_placed > 0:
-                    total_attempted = grid_vias_placed + grid_vias_skipped
-                    success_rate = (grid_vias_placed * 100.0) / total_attempted if total_attempted > 0 else 0
                     messages.append(f"\nGrid stitching:")
                     messages.append(f"{grid_vias_placed} grid vias placed")
                     messages.append(f"{grid_vias_skipped} grid vias skipped (clearance issues)")
-                    messages.append(f"Success rate: {success_rate:.1f}%")
             
             if messages:
                 msg = "\n".join(messages) + "\n\nOperation completed successfully."
